@@ -33,7 +33,7 @@ TZ=America/Lima
 # Base de Datos (PostgreSQL)
 DB_HOST=tu_host_aws_rds
 DB_PORT=5432
-DB_NAME=tenant_santa_isabel
+DB_NAME=tu_bd
 DB_USER=tu_usuario
 DB_PASSWORD=tu_password
 DB_SSL=true

@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, In } from 'typeorm';
+import { Repository, In, EntityManager } from 'typeorm';
 import axios from 'axios';
 import { BillingSend } from './billing-send.entity';
 
@@ -15,20 +15,17 @@ export class AlarmaService {
   constructor(
     @InjectRepository(BillingSend)
     private readonly billingRepo: Repository<BillingSend>,
+    private readonly entityManager: EntityManager,
   ) {}
 
-  // CONFIGURACIÓN DEL HORARIO: 10:00 y 18:00 (6 PM)
-  // El formato es: 'segundo minuto hora día_mes mes día_semana'
-  @Cron('0 0 10,18 * * *', {
-    timeZone: 'America/Lima', // Asegura que use la hora de Perú sin importar dónde esté el server
+  // CONFIGURACIÓN FINAL: 10:00 AM y 08:00 PM (20:00)
+  @Cron('0 0 10,20 * * *', {
+    timeZone: 'America/Lima',
   })
   async ejecutarAlarmaProgramada() {
-    this.logger.log('Iniciando escaneo automático de facturas...');
+    this.logger.log('Ejecutando reporte programado (10 AM / 8 PM)...');
     await this.procesarEscaneo();
   }
-
-  // Si prefieres que sea cada 8 horas exactas, usa esta en su lugar:
-  // @Cron('0 0 */8 * * *', { timeZone: 'America/Lima' })
 
   private async procesarEscaneo() {
     try {
@@ -39,45 +36,41 @@ export class AlarmaService {
       });
 
       if (pendientes.length === 0) {
-        this.logger.log('Todo en orden. No hay facturas pendientes.');
+        this.logger.log('Sin facturas pendientes para el reporte.');
         return;
       }
 
       let mensaje = `🚨 *MONITOR DE FACTURACIÓN* 🚨\n\n`;
       
-      pendientes.forEach((f, index) => {
+      for (const [index, f] of pendientes.entries()) {
         let iconoStatus = f.status === 40031 ? '❌' : '⏳';
-        let nivelUrgencia = '';
-
-        if (f.attempt_count >= 5) {
-          iconoStatus = '🔥';
-          nivelUrgencia = ' *[URGENTE]*';
-        }
+        let nivelUrgencia = f.attempt_count >= 5 ? ' *[URGENTE]*' : '';
+        if (f.attempt_count >= 5) iconoStatus = '🔥';
 
         const tipoError = f.status === 40031 ? 'SISTEMA' : 'CONEXIÓN';
         
+        // Búsqueda del local por Venta o Nota de Crédito
+        const nombreEstacion = await this.obtenerNombreLocal(f.sale_id, f.note_id);
+
         let errorMsg = 'Sin detalle';
         if (f.response) {
             try {
-                const resData = (typeof f.response === 'string') 
-                    ? JSON.parse(f.response) 
-                    : f.response;
+                const resData = (typeof f.response === 'string') ? JSON.parse(f.response) : f.response;
                 errorMsg = resData.Mensaje || resData.mensaje || resData.message || resData.description || JSON.stringify(resData);
-            } catch {
-                errorMsg = String(f.response);
-            }
+            } catch { errorMsg = String(f.response); }
         }
 
         const errorLimpio = errorMsg.replace(/[`*]/g, '').trim();
 
         mensaje += `${index + 1}. ${iconoStatus} *${f.document_full_number}*${nivelUrgencia}\n`;
-        mensaje += `   • *IDs:* \`Sale: ${f.sale_id || 'N/A'}\` | \`Note: ${f.note_id || 'N/A'}\`\n`;
+        mensaje += `   • *Estación:* ⛽ \`${nombreEstacion}\`\n`;
+        mensaje += `   • *IDs:* \`Sale: ${f.sale_id || '-'}\` | \`Note: ${f.note_id || '-'}\`\n`;
         mensaje += `   • *Intentos:* \`${f.attempt_count}\` | *Origen:* ${tipoError}\n`;
         mensaje += `   • *Error:* \`${errorLimpio}\`\n\n`;
-      });
+      }
 
-      mensaje += `📊 *Resumen:* ${pendientes.length} pendientes.\n`;
-      mensaje += `📅 _${new Date().toLocaleString('es-PE')}_`;
+      mensaje += `📊 *Resumen:* ${pendientes.length} pendientes encontrados.\n`;
+      mensaje += `📅 _Generado: ${new Date().toLocaleString('es-PE')}_`;
 
       await axios.post(`https://api.telegram.org/bot${this.BOT_TOKEN}/sendMessage`, {
         chat_id: this.GROUP_ID,
@@ -85,10 +78,33 @@ export class AlarmaService {
         parse_mode: 'Markdown',
       });
 
-      this.logger.log('Reporte automático enviado con éxito.');
-
+      this.logger.log('Reporte programado enviado con éxito.');
     } catch (error) {
-      this.logger.error(`Error en el proceso automático: ${error.message}`, error.stack);
+      this.logger.error(`Error en el envío: ${error.message}`);
+    }
+  }
+
+  private async obtenerNombreLocal(saleId: string | number, noteId: string | number): Promise<string> {
+    try {
+      if (saleId) {
+        const res = await this.entityManager.query(
+          `SELECT l.name FROM sale s JOIN local l ON s.id_local = l.id_local WHERE s.id_sale = $1`,
+          [saleId]
+        );
+        return res[0]?.name || 'Local no encontrado';
+      } 
+      
+      if (noteId) {
+        const res = await this.entityManager.query(
+          `SELECT l.name FROM credit_note c JOIN local l ON c.id_local = l.id_local WHERE c.id = $1`,
+          [noteId]
+        );
+        return res[0]?.name || 'Local no encontrado';
+      }
+
+      return 'N/A';
+    } catch (e) {
+      return 'Error de consulta';
     }
   }
 }
