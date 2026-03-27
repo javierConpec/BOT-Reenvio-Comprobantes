@@ -38,7 +38,7 @@ export class AlarmaService implements OnModuleInit {
   }
 
   // Ejecución a las 10:13 AM y 10:13 PM (22:13)
-  @Cron('0 0 10,21 * * *', { timeZone: 'America/Lima' })
+  @Cron('0 25 10,21 * * *', { timeZone: 'America/Lima' })
   async ejecutarAlarma() {
     await this.procesarEscaneo();
   }
@@ -98,7 +98,8 @@ export class AlarmaService implements OnModuleInit {
         return;
       }
 
-      let mensaje = `REPORTE DE FACTURACION PENDIENTE\n`;
+      let mensaje = `🔔 *NOTIFICACIÓN PRIORITARIA* 🔔\n`;
+      mensaje += `REPORTE DE FACTURACION PENDIENTE\n`;
       mensaje += `--------------------------\n\n`;
 
       for (const res of resultados) {
