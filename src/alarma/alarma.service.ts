@@ -38,7 +38,7 @@ export class AlarmaService implements OnModuleInit {
   }
 
   // Ejecución a las 10:13 AM y 10:13 PM (22:13)
-  @Cron('0 0 12,21 * * *', { timeZone: 'America/Lima' })
+  @Cron('0 02 12,21 * * *', { timeZone: 'America/Lima' })
   async ejecutarAlarma() {
     await this.procesarEscaneo();
   }
@@ -94,7 +94,21 @@ export class AlarmaService implements OnModuleInit {
       const resultados = await this.entityManager.query(query);
 
       if (resultados.length === 0) {
-        this.logger.log('Sin comprobantes críticos con más de 1 hora de antigüedad.');
+        this.logger.log('Sin comprobantes críticos. Enviando reporte de éxito.');
+        
+        const mensajeExito = `REPORTE DE FACTURACION\n` +
+                             `--------------------------\n\n` +
+                             `Estado del sistema:\n` +
+                             `Sincronización al día\n\n` +
+                             `Detalle:\n` +
+                             `Todos los comprobantes han sido enviados correctamente a la SUNAT.\n\n` +
+                             `Fecha de verificacion:\n` +
+                             `${new Date().toLocaleString('es-PE')}`;
+
+        await axios.post(`https://api.telegram.org/bot${this.BOT_TOKEN}/sendMessage`, {
+          chat_id: this.GROUP_ID,
+          text: mensajeExito,
+        });
         return;
       }
 
