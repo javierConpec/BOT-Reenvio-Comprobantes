@@ -38,7 +38,7 @@ export class AlarmaService implements OnModuleInit {
   }
 
   // Ejecución a las 10:13 AM y 10:13 PM (22:13)
-  @Cron('0 25 10,21 * * *', { timeZone: 'America/Lima' })
+  @Cron('0 0 12,21 * * *', { timeZone: 'America/Lima' })
   async ejecutarAlarma() {
     await this.procesarEscaneo();
   }
