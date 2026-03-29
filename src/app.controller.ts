@@ -4,6 +4,8 @@ import { Controller, Get } from '@nestjs/common';
 export class AppController {
   @Get()
   check() {
-    return { status: 'ok', uptime: process.uptime() };
+    // Al devolver un string simple, NestJS no gasta recursos 
+    // creando un objeto JSON complejo.
+    return 'OK'; 
   }
 }
