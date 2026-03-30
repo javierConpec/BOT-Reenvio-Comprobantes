@@ -3,6 +3,8 @@ import { Cron } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, In, EntityManager } from 'typeorm';
 import axios from 'axios';
+import FormData from 'form-data';
+
 import { BillingSend } from './billing-send.entity';
 
 @Injectable()
@@ -18,23 +20,142 @@ export class AlarmaService implements OnModuleInit {
     private readonly entityManager: EntityManager,
   ) {}
 
-  async onModuleInit() {
-    this.logger.log('Bot iniciado. Escuchando /id...');
+ async onModuleInit() {
+    this.logger.log('Bot iniciado. Comandos: /id, /anulados-FECHA o /anulados-INICIO/FIN');
+    
     setInterval(async () => {
       try {
         const response = await axios.get(`https://api.telegram.org/bot${this.BOT_TOKEN}/getUpdates?offset=${this.lastUpdateId + 1}`);
         const updates = response.data.result;
+
         for (const update of updates) {
           this.lastUpdateId = update.update_id;
-          if (update.message?.text === '/id') {
-            await axios.post(`https://api.telegram.org/bot${this.BOT_TOKEN}/sendMessage`, {
-              chat_id: update.message.chat.id,
-              text: `ID: ${update.message.chat.id}`,
-            });
+          const text = update.message?.text;
+          const chatId = update.message?.chat.id;
+
+          if (!text) continue;
+
+          if (text === '/id') {
+            await this.enviarMensaje(chatId, `ID de este chat: ${chatId}`);
+          }
+
+          // Detección de /anulados-
+          if (text.startsWith('/anulados-')) {
+            const input = text.split('/anulados-')[1]; // Extrae lo que viene después del guion
+
+            if (input.includes('/')) {
+              // CASO RANGO: /anulados-2026-03-20/2026-03-22
+              const [inicio, fin] = input.split('/');
+              await this.reportarAnulados(chatId, inicio, fin);
+            } else {
+              // CASO FECHA ÚNICA: /anulados-2026-03-22
+              await this.reportarAnulados(chatId, input, input);
+            }
           }
         }
       } catch (e) {}
     }, 5000);
+  }
+  private async reportarAnulados(chatId: number, fechaInicio: string, fechaFin: string) {
+    try {
+      const regexFecha = /^\d{4}-\d{2}-\d{2}$/;
+      if (!regexFecha.test(fechaInicio) || !regexFecha.test(fechaFin)) {
+        return await this.enviarMensaje(chatId, "Formato incorrecto. Usa:\n/anulados-YYYY-MM-DD");
+      }
+
+      const query = `
+        SELECT 
+            s.serie,
+            s.number,
+            s.total_amount,
+            l.name as sede,
+            s.issue_date,
+            CASE  
+                WHEN s.serie LIKE '%B%' THEN 'BOLETA'
+                WHEN s.serie LIKE '%F%' THEN 'FACTURA'
+            END AS tipo_documento
+        FROM sale s
+        INNER JOIN local l ON l.id_local = s.id_local
+        WHERE s.issue_date >= '${fechaInicio} 00:00:00'
+          AND s.issue_date <= '${fechaFin} 23:59:59'
+          AND s.state = '40002'
+          AND (s.serie LIKE '%B%' OR s.serie LIKE '%F%')
+        ORDER BY s.issue_date DESC;
+      `;
+
+      const anulados = await this.entityManager.query(query);
+
+      if (anulados.length === 0) {
+        return await this.enviarMensaje(chatId, `No hay anulados para este rango.`);
+      }
+
+      // --- LÓGICA DE ENVÍO SEGÚN CANTIDAD ---
+      
+      if (anulados.length > 15) {
+        // CASO: MÁS DE 15 COMPROBANTES
+        let mensajeAviso = `REPORTE DE ANULADOS\n`;
+        mensajeAviso += `--------------------------\n\n`;
+        mensajeAviso += `Se han encontrado ${anulados.length} comprobantes anulados.\n\n`;
+        mensajeAviso += `Debido a la cantidad, se adjunta el reporte completo en formato Excel para una mejor lectura.`;
+
+        await this.enviarMensaje(chatId, mensajeAviso);
+        await this.enviarDocumentoCSV(chatId, anulados, fechaInicio, fechaFin);
+
+      } else {
+        // CASO: 15 O MENOS COMPROBANTES (Se muestra el detalle en texto)
+        let mensaje = `REPORTE DE ANULADOS\n`;
+        mensaje += `--------------------------\n\n`;
+
+        for (const res of anulados) {
+          mensaje += `${res.tipo_documento}: ${res.serie}-${res.number}\n`;
+          mensaje += `Sede: ${res.sede} | S/ ${res.total_amount}\n`;
+          mensaje += `Fecha: ${new Date(res.issue_date).toLocaleDateString('es-PE')}\n`;
+          mensaje += `--------------------------\n`;
+        }
+
+        mensaje += `\nTotal encontrados: ${anulados.length}`;
+        await this.enviarMensaje(chatId, mensaje);
+      }
+
+    } catch (error) {
+      this.logger.error(`Error en reporte de anulados: ${error.message}`);
+      await this.enviarMensaje(chatId, "Hubo un error al procesar el reporte.");
+    }
+  }
+
+  private async enviarDocumentoCSV(chatId: number, datos: any[], inicio: string, fin: string) {
+    try {
+      // Crear contenido del CSV (encabezados y filas)
+      const encabezado = "Tipo;Serie;Numero;Sede;Monto;Fecha\n";
+      const filas = datos.map(r => 
+        `${r.tipo_documento};${r.serie};${r.number};${r.sede};${r.total_amount};${new Date(r.issue_date).toLocaleDateString('es-PE')}`
+      ).join("\n");
+
+      const csvContent = encabezado + filas;
+      const fileName = `anulados_${inicio}_${fin}.csv`;
+
+      // Preparar el FormData para enviar a Telegram
+      const form = new FormData();
+      form.append('chat_id', chatId.toString());
+      form.append('document', Buffer.from(csvContent, 'utf-8'), {
+        filename: fileName,
+        contentType: 'text/csv',
+      });
+
+      await axios.post(`https://api.telegram.org/bot${this.BOT_TOKEN}/sendDocument`, form, {
+        headers: form.getHeaders(),
+      });
+    } catch (error) {
+      this.logger.error(`Error enviando CSV: ${error.message}`);
+    }
+  }
+  // Helper para enviar mensajes
+  private async enviarMensaje(chatId: number, text: string) {
+    await axios.post(`https://api.telegram.org/bot${this.BOT_TOKEN}/sendMessage`, {
+      chat_id: chatId,
+      text: text,
+      parse_mode: 'Markdown'
+    });
   }
 
   // Ejecución a las 10:13 AM y 10:13 PM (22:13)
